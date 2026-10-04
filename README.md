@@ -5,7 +5,7 @@ Menu-driven Binance Alpha research skill. Paste a `0x` contract address, confirm
 Install:
 
 ```bash
-npx skills add Arafat128/labs-research
+npx skills add Arafat128/labs-research-custom-hertz-skill
 ```
 
 In Grok: `/labs-research` (or paste an Alpha CA and ask for a custom module mix).
