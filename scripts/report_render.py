@@ -225,6 +225,10 @@ def assemble(result: dict[str, Any]) -> dict[str, Any]:
             caption="Credits",
         )
     )
+    by_mod = result.get("credits_by_module") or {}
+    if by_mod:
+        rows = [[str(k), str(v)] for k, v in by_mod.items()]
+        ran.tables.append(Table(["Module", "Credits used"], rows, caption="Credits by module"))
     if est.get("resolved_labels"):
         ran.bullets.append("Resolved: " + ", ".join(est["resolved_labels"]) + ".")
     elif est.get("auto_included_labels"):
@@ -561,11 +565,13 @@ def assemble(result: dict[str, Any]) -> dict[str, Any]:
                 rows.append(
                     [
                         str(r.get("role_label") or r.get("role") or "—"),
-                        _fmt_n(r.get("balance") or r.get("tokens")),
-                        _pct(r.get("pct") or r.get("pct_of_supply")),
+                        str(r.get("n_wallets") if r.get("n_wallets") is not None else "—"),
+                        _fmt_n(r.get("total_balance") or r.get("balance") or r.get("tokens")),
+                        _pct(r.get("pct_of_total") or r.get("pct") or r.get("pct_of_supply")),
+                        _fmt_usd(r.get("usd_value")),
                     ]
                 )
-            s.tables.append(Table(["Role", "Balance", "Share"], rows))
+            s.tables.append(Table(["Role", "Wallets", "Balance", "Share", "USD"], rows))
 
     foot = Section("Notes")
     foot.bullets.append("Numbers are pipeline output from HertzFlow helpers. This report does not set a price target or a buy/sell.")

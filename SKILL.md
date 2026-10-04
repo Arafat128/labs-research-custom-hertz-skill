@@ -76,6 +76,8 @@ python scripts/labs_research.py run --ca 0x... --modules <numbers or ids or all>
 ## Module rules
 
 - Numbers **17–19** (`wash`, `cross_sym`, `flow_ops`) are catalogued as advanced and **not wired**. If the user picks them, say they are skipped (`advanced_not_wired_use_hertzflow`) and point to `/hertzflow` for a full forensic.
+- **#1** is the cheap balance pass unless **#8** is also selected. #8 turns on destination tracing and the estimate uses `credits_est_heavy`. Do not promise the light price when #8 is in the mix.
+- Reuse `scope.json` in the out dir. Do not run `scope` again inside `run` if that file is already there for the same CA.
 - SQL modules skip on holder-snapshot chains (`skipped: surf_no_sql`).
 - `anomaly72` is the module that keeps transfer hashes; insider/sell-out are often aggregates. Say so if the tx table is thin.
 - Do not start a HertzFlow full forensic unless the user asks for `/hertzflow`.

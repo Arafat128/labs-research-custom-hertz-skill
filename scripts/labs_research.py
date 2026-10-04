@@ -88,13 +88,27 @@ def default_pack(idx: dict[str, dict[str, Any]]) -> list[str]:
     return [mid for mid, m in idx.items() if m.get("default_on") and not m.get("advanced")]
 
 
+def module_credits(mid: str, idx: dict[str, dict[str, Any]], resolved: list[str]) -> int:
+    """Light estimate unless a sibling in heavy_when is also in the run.
+
+    Insider destination tracing (step 4) is the costly path. It runs only
+    when sellout is selected, so the menu number stays the cheap balance pass.
+    """
+    m = idx[mid]
+    triggers = m.get("heavy_when") or []
+    if triggers and any(t in resolved for t in triggers) and m.get("credits_est_heavy") is not None:
+        return int(m["credits_est_heavy"])
+    return int(m["credits_est"])
+
+
 def estimate(selected: list[str], cat: dict[str, Any]) -> dict[str, Any]:
     idx = module_index(cat)
     resolved = resolve_modules(selected, idx)
     full = resolve_modules(default_pack(idx), idx)
     usd = float(cat["usd_per_credit"])
-    sel_cr = sum(int(idx[m]["credits_est"]) for m in resolved)
-    full_cr = sum(int(idx[m]["credits_est"]) for m in full)
+    sel_cr = sum(module_credits(m, idx, resolved) for m in resolved)
+    # Full pack includes sellout, so insider is priced at the heavy trace.
+    full_cr = sum(module_credits(m, idx, full) for m in full)
     cut = max(0, full_cr - sel_cr)
     auto = [m for m in resolved if m not in selected]
     scope_cr = int(cat.get("scope_credits_est") or 0)
@@ -119,7 +133,7 @@ def estimate(selected: list[str], cat: dict[str, Any]) -> dict[str, Any]:
                 "n": idx[m].get("n"),
                 "id": m,
                 "name": idx[m]["name"],
-                "credits_est": idx[m]["credits_est"],
+                "credits_est": module_credits(m, idx, resolved),
                 "auto_included": m in auto,
             }
             for m in resolved
@@ -354,8 +368,11 @@ def run_selected(
     skipped: dict[str, str] = {}
     eg = EvidenceGraph()
 
+    credit_by_module: dict[str, float] = {}
+
     def tick(name: str, fn):
         t = time.perf_counter()
+        c0 = _credit_snap()
         try:
             val = fn()
             raw[name] = val
@@ -367,9 +384,30 @@ def run_selected(
             return raw[name]
         finally:
             timings[name] = time.perf_counter() - t
-            print(f"[timing] {name}: {timings[name]:.1f}s", file=sys.stderr, flush=True)
+            c1 = _credit_snap()
+            spent = round(float(c1.get("credits") or 0) - float(c0.get("credits") or 0), 2)
+            credit_by_module[name] = spent
+            print(
+                f"[timing] {name}: {timings[name]:.1f}s · {spent} cr",
+                file=sys.stderr,
+                flush=True,
+            )
 
-    scope = tick("scope", lambda: section_a_run(ca))
+    scope = None
+    scope_path = out_dir / "scope.json"
+    if scope_path.is_file():
+        try:
+            cached = json.loads(scope_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cached = None
+        cached_ca = str((cached or {}).get("contract_address") or "").lower()
+        if cached and cached.get("scope_ok") and cached_ca == ca:
+            scope = cached
+            timings["scope"] = 0.0
+            credit_by_module["scope"] = 0.0
+            print("[scope] reused scope.json (no extra Surf)", file=sys.stderr, flush=True)
+    if scope is None:
+        scope = tick("scope", lambda: section_a_run(ca))
     if not scope.get("scope_ok"):
         result = {
             "_status": "abort",
@@ -413,12 +451,36 @@ def run_selected(
             skipped["insider"] = "surf_no_sql"
             rule11["_skip_reason"] = "surf_no_sql"
         else:
-            from rule_11_backward_trace import run_backward_trace
+            import rule_11_backward_trace as r11
+
+            # Step 4 traces every dumper × 90-day chunk (BTW: 15 × 5 = 75 SQL
+            # calls). Chips and the holder table only need steps 1–3. Destination
+            # tracing runs when confirmed sells (#8) is in the mix.
+            skip_step4 = "sellout" not in want
+            orig_flat = r11.parallel_run_flat_tasks
+
+            def _flat(fn, tasks, max_workers=8):
+                if skip_step4:
+                    print(
+                        f"[rule_11] step4 skipped ({len(tasks)} destination queries) "
+                        "— #8 confirmed sells not selected",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return [{"data": []} for _ in tasks]
+                return orig_flat(fn, tasks, max_workers=max_workers)
 
             def _r11():
-                r = run_backward_trace(ca=ca, alpha_listing_date=listing, evidence_graph=eg)
+                r11.parallel_run_flat_tasks = _flat
+                try:
+                    r = r11.run_backward_trace(
+                        ca=ca, alpha_listing_date=listing, evidence_graph=eg
+                    )
+                finally:
+                    r11.parallel_run_flat_tasks = orig_flat
                 if "error" in r:
                     r = {**_empty_rule11(), "_error": r.get("error")}
+                r["_step4"] = "skipped_no_sellout" if skip_step4 else "ran"
                 return r
 
             rule11 = tick("insider", _r11)
@@ -763,6 +825,7 @@ def run_selected(
         "timings": timings,
         "elapsed_s": round(time.perf_counter() - t0, 1),
         "credits_used": round(used, 2),
+        "credits_by_module": credit_by_module,
         "surf_calls": int(credits1.get("calls") or 0) - int(credits0.get("calls") or 0),
         "evidence_graph": eg.to_dict() if hasattr(eg, "to_dict") else {},
     }

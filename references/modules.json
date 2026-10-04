@@ -7,12 +7,14 @@
       "n": 1,
       "id": "insider",
       "name": "Who got tokens before listing",
-      "credits_est": 90,
+      "credits_est": 40,
+      "credits_est_heavy": 280,
+      "heavy_when": ["sellout"],
       "depends_on": [],
       "sql": true,
       "default_on": true,
       "advanced": false,
-      "plain": "Finds the deployer and every wallet that received tokens before Binance Alpha listed this coin. Shows who still holds vs who already moved them."
+      "plain": "Finds the deployer and every wallet that received tokens before Binance Alpha listed this coin. Shows who still holds vs who already moved them. The expensive destination trace runs only if you also pick #8."
     },
     {
       "n": 2,
