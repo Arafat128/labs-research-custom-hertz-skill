@@ -1,0 +1,197 @@
+{
+  "usd_per_credit": 0.006,
+  "scope_credits_est": 15,
+  "notes": "Estimates are incremental given parents already ran. Actual spend depends on history chunking and retries. Scope (Alpha/Spot gate) always runs first.",
+  "modules": [
+    {
+      "id": "insider",
+      "name": "Pre-listing insider tree",
+      "credits_est": 90,
+      "depends_on": [],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "Mint from 0x0, deployer outflows before Alpha listing, quiet vs already-moved receivers."
+    },
+    {
+      "id": "holders",
+      "name": "Top holders + labels",
+      "credits_est": 4,
+      "depends_on": [],
+      "sql": false,
+      "default_on": true,
+      "advanced": false,
+      "what": "Point-in-time top-50 balances with Arkham entity labels."
+    },
+    {
+      "id": "anomaly72",
+      "name": "72h large transfers",
+      "credits_est": 40,
+      "depends_on": [],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "Transfers of >=100k tokens in the last ~4 days, with tx hashes."
+    },
+    {
+      "id": "liq",
+      "name": "Liquidity / 5% entry cap",
+      "credits_est": 10,
+      "depends_on": [],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "Main pool, 24h LP flow, Alpha 5% depth heuristic for position size."
+    },
+    {
+      "id": "cex",
+      "name": "CEX perp tier (S1/S2/S3)",
+      "credits_est": 0,
+      "depends_on": [],
+      "sql": false,
+      "default_on": true,
+      "advanced": false,
+      "what": "Binance/Aster/Bitget perp listing. No Surf SQL."
+    },
+    {
+      "id": "tge",
+      "name": "TGE / LP first transfer",
+      "credits_est": 6,
+      "depends_on": ["liq"],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "First pool transfer vs Alpha listing time."
+    },
+    {
+      "id": "chips",
+      "name": "Chip / role mix",
+      "credits_est": 4,
+      "depends_on": ["insider", "holders"],
+      "sql": false,
+      "default_on": true,
+      "advanced": false,
+      "what": "Role buckets (pool, deployer, quiet, dumper dest, other) plus alloc rows."
+    },
+    {
+      "id": "sellout",
+      "name": "Confirmed DEX/CEX sell-out",
+      "credits_est": 45,
+      "depends_on": ["insider"],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "Insider tree tokens sold on DEX or sent to labelled CEX deposits."
+    },
+    {
+      "id": "funding",
+      "name": "Funding source (mint vs DEX vs P2P)",
+      "credits_est": 35,
+      "depends_on": ["insider", "holders"],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "Where high-value wallets received tokens: 0x0 mint, DEX buy, or P2P."
+    },
+    {
+      "id": "mint_auth",
+      "name": "Mint authorities",
+      "credits_est": 22,
+      "depends_on": [],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "Addresses that received from 0x0 (bridge/staking/airdrop minters)."
+    },
+    {
+      "id": "ht_dumpers",
+      "name": "High-throughput dumpers",
+      "credits_est": 22,
+      "depends_on": [],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "Wallets that took a large allocation, ~cleared it, with high tx count."
+    },
+    {
+      "id": "cex_fanout",
+      "name": "CEX fan-out hubs",
+      "credits_est": 18,
+      "depends_on": [],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "CEX hot wallet → hub → many sub-wallets."
+    },
+    {
+      "id": "clusters",
+      "name": "Wallet clusters",
+      "credits_est": 28,
+      "depends_on": ["holders"],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "Wallets that look retail but transfer among themselves."
+    },
+    {
+      "id": "recent_flow",
+      "name": "72h fan-out vs CEX consolidation",
+      "credits_est": 8,
+      "depends_on": ["holders"],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "Operator seeding many EOAs, or many EOAs dumping into CEX, last 3 days."
+    },
+    {
+      "id": "recent_mint",
+      "name": "Recent mint events",
+      "credits_est": 4,
+      "depends_on": [],
+      "sql": true,
+      "default_on": true,
+      "advanced": false,
+      "what": "Large 0x0 mints by day (fresh supply)."
+    },
+    {
+      "id": "monitoring",
+      "name": "Monitoring wallet export",
+      "credits_est": 0,
+      "depends_on": [],
+      "sql": false,
+      "default_on": true,
+      "advanced": false,
+      "what": "Deduped wallet list from whatever modules ran. No extra SQL."
+    },
+    {
+      "id": "wash",
+      "name": "Wash-infra (advanced)",
+      "credits_est": 350,
+      "depends_on": ["holders"],
+      "sql": true,
+      "default_on": false,
+      "advanced": true,
+      "what": "Closed-loop wash detection. Expensive; off by default."
+    },
+    {
+      "id": "cross_sym",
+      "name": "Cross-token whales (advanced)",
+      "credits_est": 30,
+      "depends_on": ["holders"],
+      "sql": false,
+      "default_on": false,
+      "advanced": true,
+      "what": "Same wallet in top holders of many Alpha tokens. Often routers/MEV."
+    },
+    {
+      "id": "flow_ops",
+      "name": "Flow operators (advanced)",
+      "credits_est": 10,
+      "depends_on": [],
+      "sql": true,
+      "default_on": false,
+      "advanced": true,
+      "what": "Sandwich / MEV-style flow operators. Off by default."
+    }
+  ]
+}
