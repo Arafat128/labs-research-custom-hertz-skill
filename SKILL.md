@@ -47,19 +47,19 @@ Windows: set `PYTHONIOENCODING=utf-8` and `PYTHONUTF8=1`. Do not pipe with `2>&1
 
 Extract a CA with `^0x[a-fA-F0-9]{40}$`. If none, ask. Lowercase it.
 
-If the user already named module ids (or `all`), skip the pick step and still run estimate → Y/N.
+If the user already named numbers, module ids, or `all`, skip the pick step and still run estimate → Y/N.
 
 ```
 python scripts/labs_research.py scope --ca 0x... --out <workspace>/reports/<ca>/labs-research/scope.json --lang {en|zh}
-python scripts/labs_research.py menu --json
-python scripts/labs_research.py estimate --modules <ids or all> --json
-python scripts/labs_research.py run --ca 0x... --modules <ids or all> --out-dir <workspace>/reports/<ca>/labs-research --lang {en|zh}
+python scripts/labs_research.py menu
+python scripts/labs_research.py estimate --modules <numbers or ids or all> --json
+python scripts/labs_research.py run --ca 0x... --modules <numbers or ids or all> --out-dir <workspace>/reports/<ca>/labs-research --lang {en|zh}
 ```
 
 1. **Scope (always first).** Abort on `SPOT_GRADUATED`, `NEVER_ALPHA`, `INVALID_CA`, or missing `scope_ok`. Do not offer paid modules.
-2. **Menu.** Run `menu --json`. Show id / name / est credits / deps from that JSON. Offer `all` (default pack = every `default_on` and not `advanced`).
-3. **Resolve.** CLI auto-includes parents (`tge` pulls `liq`, `sellout` pulls `insider`, …). Tell the user which parents were added.
-4. **Estimate.** Run `estimate --json`. Print this table from the JSON — do not recompute:
+2. **Menu.** Run `menu` (human text, not `--json`). Paste that numbered list to the user. Do not rewrite the blurbs. Tell them: reply with **numbers** (example `3, 13, 14`), or `all`. Ids still work. `n` + `plain` live in `references/modules.json`.
+3. **Resolve.** CLI auto-includes parents. Tell the user which extra numbers were added (from `auto_included_labels`).
+4. **Estimate.** Run `estimate --modules <their reply> --json`. Print this table from the JSON — do not recompute:
 
    | | Credits | USD |
    |---|---|---|
@@ -68,14 +68,14 @@ python scripts/labs_research.py run --ca 0x... --modules <ids or all> --out-dir 
    | **Cut** | `cut_credits_est` (`cut_pct`%) | `cut_usd_est` |
    | Scope gate (always, extra) | `scope_credits_est` | `scope_usd_est` |
 
-   USD rate is `usd_per_credit` in the catalog. Ask **Proceed? (Y/N)**.
+   USD rate is `usd_per_credit` in the catalog. Also print `requested_labels` / `auto_included_labels`. Ask **Proceed? (Y/N)**.
 5. **Gate.** Wait for Y. N or anything else stops with no paid `run`.
-6. **Run.** Only after Y. Foreground, wait for exit. Full pack can take several minutes. `run` also echoes the estimate on stderr, then writes `report.md`, `result.json`, and (if `monitoring` is selected) `monitoring_wallets.json` + `monitoring_paste.json`.
-7. **Present.** Open `report.md`. Lead with **Wallets that matter** and **Transactions**. Quote pipeline numbers only. Mention actual `credits_used` vs the estimate. Link explorer URLs already in the report.
+6. **Run.** Only after Y. Foreground, wait for exit. Full pack can take several minutes. `run` also echoes the estimate on stderr, then writes `report.md`, `report.html`, `report.pdf`, `wallets.csv`, `transactions.csv`, `result.json`, and (if `monitoring` is selected) `monitoring_wallets.json` + `monitoring_paste.json`.
+7. **Present.** Open `report.md` (same content as the HTML and PDF). Lead with the snapshot, wallets, and transactions. Quote pipeline numbers only. Mention actual `credits_used` vs the estimate. Point the user at `report.pdf` and `report.html`. Rebuild from a saved JSON with `python scripts/labs_research.py render --in <result.json>` if the layout needs a refresh without a new Surf run.
 
 ## Module rules
 
-- `wash`, `cross_sym`, `flow_ops` are catalogued as advanced and **not wired**. If the user picks them, say they are skipped (`advanced_not_wired_use_hertzflow`) and point to `/hertzflow` for a full forensic.
+- Numbers **17–19** (`wash`, `cross_sym`, `flow_ops`) are catalogued as advanced and **not wired**. If the user picks them, say they are skipped (`advanced_not_wired_use_hertzflow`) and point to `/hertzflow` for a full forensic.
 - SQL modules skip on holder-snapshot chains (`skipped: surf_no_sql`).
 - `anomaly72` is the module that keeps transfer hashes; insider/sell-out are often aggregates. Say so if the tx table is thin.
 - Do not start a HertzFlow full forensic unless the user asks for `/hertzflow`.

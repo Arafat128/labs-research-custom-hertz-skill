@@ -49,6 +49,19 @@ def module_index(cat: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {m["id"]: m for m in cat["modules"]}
 
 
+def number_index(cat: dict[str, Any]) -> dict[int, str]:
+    out: dict[int, str] = {}
+    for i, m in enumerate(cat["modules"], start=1):
+        n = int(m.get("n") or i)
+        out[n] = m["id"]
+        m["n"] = n
+    return out
+
+
+def _label(m: dict[str, Any]) -> str:
+    return f"#{m.get('n')} {m.get('name')}"
+
+
 def resolve_modules(wanted: list[str], idx: dict[str, dict[str, Any]]) -> list[str]:
     unknown = [w for w in wanted if w not in idx]
     if unknown:
@@ -103,6 +116,7 @@ def estimate(selected: list[str], cat: dict[str, Any]) -> dict[str, Any]:
         "full_plus_scope_credits_est": full_cr + scope_cr,
         "per_module": [
             {
+                "n": idx[m].get("n"),
                 "id": m,
                 "name": idx[m]["name"],
                 "credits_est": idx[m]["credits_est"],
@@ -110,6 +124,9 @@ def estimate(selected: list[str], cat: dict[str, Any]) -> dict[str, Any]:
             }
             for m in resolved
         ],
+        "requested_labels": [_label(idx[m]) for m in resolved if m in selected],
+        "auto_included_labels": [_label(idx[m]) for m in auto],
+        "resolved_labels": [_label(idx[m]) for m in resolved],
     }
 
 
@@ -148,33 +165,45 @@ def boot_hertzflow(lang: str) -> Path:
 
 def cmd_menu(as_json: bool) -> int:
     cat = load_catalog()
+    number_index(cat)
     if as_json:
         print(json.dumps(cat, ensure_ascii=False, indent=2))
         return 0
     usd = cat["usd_per_credit"]
-    print("labs-research modules  (credits are estimates; parents auto-included)")
-    print(f"USD rate ${usd}/credit. Scope gate always runs first (~{cat['scope_credits_est']} cr).")
-    print()
-    print("| id | name | est cr | needs | default |")
-    print("|---|---|---:|---|---|")
-    for m in cat["modules"]:
-        deps = ",".join(m["depends_on"]) if m["depends_on"] else "—"
-        flag = "advanced" if m["advanced"] else ("on" if m["default_on"] else "off")
-        print(f"| `{m['id']}` | {m['name']} | {m['credits_est']} | {deps} | {flag} |")
-    idx = module_index(cat)
-    full = estimate(default_pack(idx), cat)
+    print("Pick what to run. Reply with numbers (example: 3, 13, 14) or all.")
     print()
     print(
-        f"Full default pack: **{full['full_pack_credits_est']} cr** "
-        f"(~${full['full_pack_usd_est']}). Reply with ids, or `all`."
+        f"Scope check always runs first (~{cat['scope_credits_est']} cr). "
+        f"Needed extras are added automatically. ${usd}/credit."
+    )
+    print()
+    regular = [m for m in cat["modules"] if not m.get("advanced")]
+    advanced = [m for m in cat["modules"] if m.get("advanced")]
+    for m in regular:
+        print(f"{m['n']}. {m['name']}  ·  ~{m['credits_est']} cr")
+        print(f"   {m.get('plain') or m.get('what') or ''}")
+        print()
+    if advanced:
+        print("Advanced (not available here — use /hertzflow):")
+        print()
+        for m in advanced:
+            print(f"{m['n']}. {m['name']}  ·  ~{m['credits_est']} cr")
+            print(f"   {m.get('plain') or m.get('what') or ''}")
+            print()
+    idx = module_index(cat)
+    full = estimate(default_pack(idx), cat)
+    print(
+        f"all = everything 1–16  ·  {full['full_pack_credits_est']} cr "
+        f"(~${full['full_pack_usd_est']})"
     )
     return 0
 
 
 def cmd_estimate(modules: str, as_json: bool) -> int:
     cat = load_catalog()
+    number_index(cat)
     idx = module_index(cat)
-    wanted = _parse_modules(modules, idx)
+    wanted = _parse_modules(modules, idx, cat)
     est = estimate(wanted, cat)
     if as_json:
         print(json.dumps(est, ensure_ascii=False, indent=2))
@@ -195,22 +224,44 @@ def cmd_estimate(modules: str, as_json: bool) -> int:
         f"${round(est['selected_plus_scope_credits_est'] * est['usd_per_credit'], 2)} |"
     )
     print()
-    if est["auto_included"]:
-        print("Auto-included parents: " + ", ".join(est["auto_included"]))
-    print("Resolved modules: " + ", ".join(est["resolved"]))
+    print("You picked: " + ", ".join(est["requested_labels"]))
+    if est["auto_included_labels"]:
+        print("Also added: " + ", ".join(est["auto_included_labels"]))
+    print("Will run: " + ", ".join(est["resolved_labels"]))
     print(f"Cut vs full pack: {est['cut_pct']}%")
     print("Proceed? (Y/N)")
     return 0
 
 
-def _parse_modules(raw: str, idx: dict[str, dict[str, Any]]) -> list[str]:
+def _parse_modules(
+    raw: str,
+    idx: dict[str, dict[str, Any]],
+    cat: dict[str, Any] | None = None,
+) -> list[str]:
     raw = (raw or "").strip().lower()
     if raw in ("all", "default", "*"):
         return default_pack(idx)
-    parts = [p.strip() for p in raw.replace(" ", ",").split(",") if p.strip()]
+    parts = [p.strip().lstrip("#") for p in re.split(r"[\s,;]+", raw) if p.strip()]
     if not parts:
-        raise SystemExit("no modules given (use --modules insider,holders or --modules all)")
-    return parts
+        raise SystemExit("no modules given (use --modules 3,13,14 or --modules all)")
+    cat = cat or load_catalog()
+    nmap = number_index(cat)
+    out: list[str] = []
+    unknown: list[str] = []
+    for p in parts:
+        if p.isdigit():
+            mid = nmap.get(int(p))
+            if mid:
+                out.append(mid)
+            else:
+                unknown.append(p)
+        elif p in idx:
+            out.append(p)
+        else:
+            unknown.append(p)
+    if unknown:
+        raise SystemExit(f"unknown module(s): {', '.join(unknown)}")
+    return out
 
 
 def cmd_scope(ca: str, out: Path | None, lang: str) -> int:
@@ -844,259 +895,9 @@ def _write_result(out_dir: Path, result: dict[str, Any], lang: str) -> None:
     (out_dir / "result.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
     )
-    md = render_markdown(result, lang)
-    (out_dir / "report.md").write_text(md, encoding="utf-8")
-    print(f"wrote {out_dir / 'report.md'}")
+    from report_render import write_reports
 
-
-def _fmt_n(n: Any) -> str:
-    if n is None:
-        return "—"
-    try:
-        x = float(n)
-    except (TypeError, ValueError):
-        return str(n)
-    ax = abs(x)
-    if ax >= 1_000_000_000:
-        return f" {x/1e9:.2f}B".strip()
-    if ax >= 1_000_000:
-        return f" {x/1e6:.2f}M".strip()
-    if ax >= 1_000:
-        return f"{x:,.0f}"
-    return f"{x:,.4g}"
-
-
-def _fmt_usd(n: Any) -> str:
-    if n is None:
-        return "—"
-    try:
-        x = float(n)
-    except (TypeError, ValueError):
-        return str(n)
-    sign = "-" if x < 0 else ""
-    x = abs(x)
-    if x >= 1_000_000:
-        return f"{sign}${x/1e6:.2f}M"
-    if x >= 1_000:
-        return f"{sign}${x:,.0f}"
-    return f"{sign}${x:,.2f}"
-
-
-def _short(a: str | None) -> str:
-    if not a:
-        return "—"
-    return f"{a[:8]}…{a[-4:]}" if len(a) > 14 else a
-
-
-def _ts(v: Any) -> str:
-    if v is None:
-        return "—"
-    if isinstance(v, (int, float)):
-        try:
-            return datetime.fromtimestamp(int(v), tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
-        except (OSError, ValueError, OverflowError):
-            return str(v)
-    return str(v)[:16]
-
-
-def render_markdown(result: dict[str, Any], lang: str) -> str:
-    zh = lang == "zh"
-    scope = result.get("scope") or {}
-    est = result.get("credit_estimate") or {}
-    chain = result.get("active_chain") or "bsc"
-    addr_base, tx_base = EXPLORER.get(chain, EXPLORER["bsc"])
-    sym = scope.get("symbol") or "TOKEN"
-    name = scope.get("name") or ""
-    lines: list[str] = []
-    title = f"# labs-research · {sym} {name}".strip()
-    lines.append(title)
-    lines.append("")
-    if result.get("_status") != "ok":
-        lines.append(f"**Stopped:** `{result.get('_reason')}`")
-        lines.append("")
-        lines.append(result.get("_detail") or "")
-        return "\n".join(lines) + "\n"
-
-    lines.append("| | |")
-    lines.append("|---|---|")
-    lines.append(f"| CA | `{result.get('ca')}` |")
-    lines.append(f"| Chain | {scope.get('chain_label') or chain} |")
-    lines.append(f"| Alpha listing | {scope.get('alpha_listing_date_utc') or '—'} |")
-    lines.append(f"| Spot | {scope.get('spot_status') or '—'} |")
-    lines.append(f"| Price | {_fmt_usd(scope.get('alpha_price_usd'))} |")
-    lines.append(f"| Modules | {', '.join(result.get('modules_requested') or [])} |")
-    lines.append("")
-
-    lines.append("## Credits")
-    lines.append("")
-    lines.append("| | Credits | USD |")
-    lines.append("|---|---:|---:|")
-    lines.append(
-        f"| Full default pack (est) | {est.get('full_pack_credits_est', '—')} | "
-        f"${est.get('full_pack_usd_est', '—')} |"
-    )
-    lines.append(
-        f"| Selection (est) | {est.get('selected_credits_est', '—')} | "
-        f"${est.get('selected_usd_est', '—')} |"
-    )
-    lines.append(
-        f"| **Cut (est)** | **{est.get('cut_credits_est', '—')}** "
-        f"({est.get('cut_pct', '—')}%) | **${est.get('cut_usd_est', '—')}** |"
-    )
-    used = result.get("credits_used")
-    usd = (est.get("usd_per_credit") or 0.006) * float(used or 0)
-    lines.append(f"| Actual used | {used} | ${usd:.2f} |")
-    lines.append(f"| Elapsed | {result.get('elapsed_s')}s | |")
-    lines.append("")
-    if est.get("auto_included"):
-        lines.append("Parents auto-included: `" + "`, `".join(est["auto_included"]) + "`")
-        lines.append("")
-    if result.get("skipped"):
-        lines.append("Skipped: " + ", ".join(f"`{k}` ({v})" for k, v in result["skipped"].items()))
-        lines.append("")
-    if result.get("errors"):
-        lines.append("Errors: " + ", ".join(f"`{k}`: {v}" for k, v in result["errors"].items()))
-        lines.append("")
-
-    lines.append("## Wallets that matter")
-    lines.append("")
-    wallets = result.get("wallets") or []
-    if not wallets:
-        lines.append("_No wallets collected from the selected modules._")
-    else:
-        lines.append("| role | address | balance | % | label | why |")
-        lines.append("|---|---|---:|---:|---|---|")
-        for w in wallets[:80]:
-            link = f"[`{_short(w['address'])}`]({addr_base}{w['address']})"
-            pct = w.get("pct")
-            pct_s = f"{float(pct):.2f}%" if isinstance(pct, (int, float)) else "—"
-            lines.append(
-                f"| {w.get('role','')} | {link} | {_fmt_n(w.get('balance'))} | {pct_s} | "
-                f"{w.get('label') or '—'} | {w.get('why') or '—'} |"
-            )
-    lines.append("")
-
-    lines.append("## Transactions")
-    lines.append("")
-    txs = result.get("transactions") or []
-    if not txs:
-        lines.append(
-            "_No tx hashes in the evidence graph for this module mix. "
-            "`anomaly72` is the module that keeps hashes; insider/sell-out are often aggregates._"
-        )
-    else:
-        lines.append("| time (UTC) | type | from | to | amount | USD | tx |")
-        lines.append("|---|---|---|---|---:|---:|---|")
-        for t in txs[:100]:
-            txh = t.get("tx_hash") or ""
-            tlink = f"[`{_short(txh)}`]({tx_base}{txh})" if txh else "—"
-            lines.append(
-                f"| {_ts(t.get('ts'))} | {t.get('type') or ''} | `{_short(t.get('from'))}` | "
-                f"`{_short(t.get('to'))}` | {_fmt_n(t.get('amount'))} | {_fmt_usd(t.get('usd'))} | {tlink} |"
-            )
-    lines.append("")
-
-    raw = result.get("raw") or {}
-    if "insider" in raw:
-        r11 = raw["insider"]
-        lines.append("## Insider tree")
-        lines.append("")
-        lines.append(f"- Deployer: `{r11.get('deployer') or '—'}`")
-        rec = r11.get("pre_launch_receivers") or []
-        quiet = r11.get("quiet_wallets") or []
-        lines.append(f"- Pre-listing receivers: {len(rec)}")
-        lines.append(f"- Quiet (unmoved): {len(quiet)}")
-        if r11.get("summary_text"):
-            lines.append("")
-            lines.append(str(r11["summary_text"]))
-        lines.append("")
-    if "sellout" in raw:
-        d = raw["sellout"]
-        lines.append("## Confirmed sell-out")
-        lines.append("")
-        lines.append(f"- Insider wallets: {d.get('insider_n_wallets')}")
-        lines.append(f"- CEX tokens: {_fmt_n(d.get('confirmed_cex_tokens'))}")
-        lines.append(f"- DEX tokens: {_fmt_n(d.get('confirmed_dex_tokens'))}")
-        lines.append(f"- Confirmed total: {_fmt_n(d.get('confirmed_total_tokens'))} ({d.get('confirmed_total_pct')})")
-        lines.append(f"- Est. proceeds: {_fmt_usd(d.get('confirmed_est_profit_usd'))}")
-        lines.append(f"- Net sell-out USD: {_fmt_usd(d.get('confirmed_net_sellout_usd'))}")
-        lines.append("")
-    if "liq" in raw:
-        q = raw["liq"]
-        lines.append("## Liquidity")
-        lines.append("")
-        lines.append(f"- Pool: `{q.get('dex_pool_addr') or '—'}`")
-        lines.append(f"- Pool LP: {_fmt_usd(q.get('dex_pool_liquidity_usd'))}")
-        lines.append(f"- 5% Alpha depth (entry cap): {_fmt_usd(q.get('alpha_5pct_depth_usd_est'))}")
-        lines.append(f"- Price: {_fmt_usd(q.get('current_price_usd'))}")
-        lines.append("")
-    if "cex" in raw:
-        c = raw["cex"]
-        lines.append("## CEX perp")
-        lines.append("")
-        lines.append(f"- Tier: `{c.get('tier')}`")
-        lines.append(f"- Binance perp: {c.get('has_binance_perp')} `{c.get('binance_perp_pair') or ''}`")
-        lines.append("")
-    if "anomaly72" in raw:
-        a = raw["anomaly72"]
-        lines.append("## 72h large transfers")
-        lines.append("")
-        lines.append(f"- Events: {a.get('n_recent_events')}")
-        if a.get("was_truncated"):
-            lines.append(f"- Truncated at SQL LIMIT {a.get('limit')}")
-        lines.append("")
-    if "funding" in raw:
-        sm = (raw["funding"] or {}).get("summary") or {}
-        lines.append("## Funding source")
-        lines.append("")
-        lines.append(f"- Addresses queried: {sm.get('n_addrs_queried', '—')}")
-        lines.append(f"- With data: {sm.get('n_addrs_with_data', '—')}")
-        lines.append(f"- Mint-fed: {sm.get('n_mining_fed', '—')}")
-        lines.append(f"- DEX-buy: {sm.get('n_dex_fed', '—')}")
-        lines.append(f"- P2P: {sm.get('n_p2p_fed', '—')}")
-        lines.append(f"- CEX withdraw: {sm.get('n_cex_fed', '—')}")
-        lines.append("")
-    if "mint_auth" in raw:
-        ma = raw["mint_auth"]
-        auths = ((ma.get("authorities") or {}).get("authorities")) or []
-        lines.append("## Mint authorities")
-        lines.append("")
-        if not auths:
-            lines.append("_None found._")
-        else:
-            lines.append("| address | minted | % supply | n_mints |")
-            lines.append("|---|---:|---:|---:|")
-            for a in auths[:20]:
-                lines.append(
-                    f"| [`{_short(a.get('addr'))}`]({addr_base}{a.get('addr')}) | "
-                    f"{_fmt_n(a.get('total_minted'))} | {a.get('mint_pct_supply')} | {a.get('n_mints')} |"
-                )
-        lines.append("")
-    if "recent_mint" in raw:
-        rm = raw["recent_mint"]
-        lines.append("## Recent mints")
-        lines.append("")
-        lines.append("```json")
-        lines.append(json.dumps(_jsonable(rm), ensure_ascii=False, indent=2)[:4000])
-        lines.append("```")
-        lines.append("")
-    if "recent_flow" in raw:
-        lines.append("## 72h fan-out / consolidation")
-        lines.append("")
-        lines.append("```json")
-        lines.append(json.dumps(_jsonable(raw["recent_flow"]), ensure_ascii=False, indent=2)[:4000])
-        lines.append("```")
-        lines.append("")
-
-    lines.append("---")
-    lines.append(
-        "Numbers are locked pipeline output from HertzFlow helpers. "
-        "Credit estimates live in `references/modules.json`."
-        if not zh
-        else "数字来自 HertzFlow helpers 的锁定输出。额度估算见 `references/modules.json`。"
-    )
-    lines.append("")
-    return "\n".join(lines)
+    write_reports(out_dir, result, lang)
 
 
 def cmd_run(ca: str, modules: str, out_dir: Path, lang: str) -> int:
@@ -1104,8 +905,9 @@ def cmd_run(ca: str, modules: str, out_dir: Path, lang: str) -> int:
         print("INSUFFICIENT_DATA: CA failed regex ^0x[a-fA-F0-9]{40}$", file=sys.stderr)
         return 2
     cat = load_catalog()
+    number_index(cat)
     idx = module_index(cat)
-    wanted = _parse_modules(modules, idx)
+    wanted = _parse_modules(modules, idx, cat)
     resolved = resolve_modules(wanted, idx)
     est = estimate(wanted, cat)
     print(json.dumps({"credit_estimate": est}, ensure_ascii=False, indent=2), file=sys.stderr)
@@ -1113,6 +915,15 @@ def cmd_run(ca: str, modules: str, out_dir: Path, lang: str) -> int:
     result = run_selected(ca, resolved, lang, out_dir)
     if result.get("_status") != "ok":
         return 1
+    return 0
+
+
+def cmd_render(src: Path, out_dir: Path | None) -> int:
+    data = json.loads(src.read_text(encoding="utf-8"))
+    dest = out_dir or src.parent
+    from report_render import write_reports
+
+    write_reports(dest, data, data.get("lang") or "en")
     return 0
 
 
@@ -1137,9 +948,13 @@ def main() -> int:
 
     p_run = sub.add_parser("run")
     p_run.add_argument("--ca", required=True)
-    p_run.add_argument("--modules", required=True, help="comma ids or 'all'")
+    p_run.add_argument("--modules", required=True, help="numbers, ids, or 'all' (e.g. 3,13,14)")
     p_run.add_argument("--out-dir", type=Path, required=True)
     p_run.add_argument("--lang", default="en", choices=("en", "zh"))
+
+    p_render = sub.add_parser("render")
+    p_render.add_argument("--in", dest="src", type=Path, required=True)
+    p_render.add_argument("--out-dir", type=Path, default=None)
 
     args = ap.parse_args()
     if args.cmd == "menu":
@@ -1150,6 +965,8 @@ def main() -> int:
         return cmd_scope(args.ca, args.out, args.lang)
     if args.cmd == "run":
         return cmd_run(args.ca, args.modules, args.out_dir, args.lang)
+    if args.cmd == "render":
+        return cmd_render(args.src, args.out_dir)
     return 2
 
 
