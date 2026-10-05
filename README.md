@@ -38,3 +38,15 @@ python scripts/labs_research.py run --ca 0x... --modules 3,13,14 --out-dir ./out
 ```
 
 `--modules all` is numbers 1–16. Advanced 17–19 are catalogued but not wired; use `/hertzflow` for those.
+
+## Acknowledgements
+
+Built on [HertzFlow](https://github.com/HertzFlow/hertzflow-skills)'s open-source Alpha research helpers (MIT, Copyright (c) 2026 HertzFlow).
+
+This project extends HertzFlow's tooling with a menu-driven research workflow and does not vendor-copy the HertzFlow source tree. HertzFlow helpers are installed separately and used as a dependency.
+
+## License
+
+This repository's own code is [MIT](LICENSE), Copyright (c) 2026 Arafat128.
+
+HertzFlow's copyright is not applied to this repository. Their MIT notice applies to their separately installed helpers, not to this tree.
