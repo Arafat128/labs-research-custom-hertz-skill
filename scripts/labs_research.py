@@ -165,6 +165,93 @@ def find_hertzflow_root() -> Path:
     )
 
 
+_SURF_SUBPROCESS_PATCHED = False
+
+
+def _surf_argv(args: Any) -> list[str]:
+    if not args:
+        return []
+    return [str(x) for x in args]
+
+
+def _is_surf_cli(argv: list[str]) -> bool:
+    if not argv:
+        return False
+    a0 = argv[0].replace("\\", "/").lower()
+    return a0 == "surf" or a0.endswith("/surf") or a0.endswith("surf.exe")
+
+
+def _credits_from_surf_stdout(stdout: Any) -> float:
+    if stdout is None:
+        return 0.0
+    if isinstance(stdout, bytes):
+        text = stdout.decode("utf-8", "replace")
+    else:
+        text = str(stdout)
+    i = text.find("{")
+    if i < 0:
+        return 0.0
+    try:
+        doc = json.loads(text[i:])
+    except json.JSONDecodeError:
+        return 0.0
+    if not isinstance(doc, dict):
+        return 0.0
+    try:
+        return float((doc.get("meta") or {}).get("credits_used") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _surf_call_already_counted() -> bool:
+    """True when HertzFlow already added this call via _surf_credit_add."""
+    import inspect
+
+    skip_fns = {"_run_surf_with_retry", "_record_credit", "_run_one"}
+    for fr in inspect.stack(0)[1:20]:
+        fn = (fr.filename or "").replace("\\", "/")
+        if fr.function in skip_fns and (
+            fn.endswith("section_a_scope.py") or fn.endswith("parallel_surf.py")
+        ):
+            return True
+    return False
+
+
+def install_surf_credit_patch() -> None:
+    """Count meta.credits_used from raw `surf` subprocesses HertzFlow does not record.
+
+    section_f_holders (token-holders) and similar helpers call subprocess.run
+    directly. SQL via parallel_surf / _run_surf_with_retry is skipped here so
+    those calls are not double-counted.
+    """
+    global _SURF_SUBPROCESS_PATCHED
+    if _SURF_SUBPROCESS_PATCHED:
+        return
+    import subprocess as sp
+
+    orig = sp.run
+
+    def run(*args: Any, **kwargs: Any) -> Any:
+        proc = orig(*args, **kwargs)
+        try:
+            argv = _surf_argv(args[0] if args else kwargs.get("args"))
+            if not _is_surf_cli(argv) or _surf_call_already_counted():
+                return proc
+            cr = _credits_from_surf_stdout(getattr(proc, "stdout", None))
+            if cr:
+                from section_a_scope import _surf_credit_add
+
+                _surf_credit_add(credits=cr, seconds=0.0, attempts=1, success=True)
+                sub = argv[1] if len(argv) > 1 else "surf"
+                print(f"[credits] +{cr} cr ({sub})", file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        return proc
+
+    sp.run = run  # type: ignore[method-assign]
+    _SURF_SUBPROCESS_PATCHED = True
+
+
 def boot_hertzflow(lang: str) -> Path:
     root = find_hertzflow_root()
     helpers = str(root / "helpers")
@@ -174,6 +261,7 @@ def boot_hertzflow(lang: str) -> Path:
     from i18n import set_lang
 
     set_lang(lang)
+    install_surf_credit_patch()
     return root
 
 

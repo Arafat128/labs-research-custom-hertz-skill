@@ -71,13 +71,14 @@ python scripts/labs_research.py run --ca 0x... --modules <numbers or ids or all>
    USD rate is `usd_per_credit` in the catalog. Also print `requested_labels` / `auto_included_labels`. Ask **Proceed? (Y/N)**.
 5. **Gate.** Wait for Y. N or anything else stops with no paid `run`.
 6. **Run.** Only after Y. Foreground, wait for exit. Full pack can take several minutes. `run` also echoes the estimate on stderr, then writes `report.md`, `report.html`, `report.pdf`, `wallets.csv`, `transactions.csv`, `result.json`, and (if `monitoring` is selected) `monitoring_wallets.json` + `monitoring_paste.json`.
-7. **Present.** Open `report.md` (same content as the HTML and PDF). Lead with the snapshot, wallets, and transactions. Quote pipeline numbers only. Mention actual `credits_used` vs the estimate. Point the user at `report.pdf` and `report.html`. Rebuild from a saved JSON with `python scripts/labs_research.py render --in <result.json>` if the layout needs a refresh without a new Surf run.
+7. **Present.** Open `report.md` (same content as the HTML and PDF). Lead with the snapshot, wallets, and transactions. Quote pipeline numbers only. Mention actual `credits_used` vs the estimate. `credits_used` is Surf `meta.credits_used` from SQL **and** raw CLI subprocesses (`token-holders`, labels). Point the user at `report.pdf` and `report.html`. Rebuild from a saved JSON with `python scripts/labs_research.py render --in <result.json>` if the layout needs a refresh without a new Surf run.
 
 ## Module rules
 
 - Numbers **17–19** (`wash`, `cross_sym`, `flow_ops`) are catalogued as advanced and **not wired**. If the user picks them, say they are skipped (`advanced_not_wired_use_hertzflow`) and point to `/hertzflow` for a full forensic.
 - **#1** is the cheap balance pass unless **#8** is also selected. #8 turns on destination tracing and the estimate uses `credits_est_heavy`. Do not promise the light price when #8 is in the mix.
 - Reuse `scope.json` in the out dir. Do not run `scope` again inside `run` if that file is already there for the same CA.
+- Report `credits_used` from the pipeline counter. It includes HertzFlow SQL and raw `surf` subprocess stdout. It does not include a key-probe you ran outside `run`.
 - SQL modules skip on holder-snapshot chains (`skipped: surf_no_sql`).
 - `anomaly72` is the module that keeps transfer hashes; insider/sell-out are often aggregates. Say so if the tx table is thin.
 - Do not start a HertzFlow full forensic unless the user asks for `/hertzflow`.
