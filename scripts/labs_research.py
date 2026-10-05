@@ -1186,8 +1186,14 @@ def run_selected(
             "step4_subdumpers_cap": step4_sub_cap(depth),
             "second_hop": "on" if depth == "second" else "off",
             "depth": depth,
-            "anomaly_window_days": window,
-            "anomaly_sql_days": anomaly_sql_days(window),
+            **(
+                {
+                    "anomaly_window_days": window,
+                    "anomaly_sql_days": anomaly_sql_days(window),
+                }
+                if "anomaly72" in want
+                else {}
+            ),
         },
         "evidence_graph": eg.to_dict() if hasattr(eg, "to_dict") else {},
     }

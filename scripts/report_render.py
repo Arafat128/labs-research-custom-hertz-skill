@@ -50,12 +50,18 @@ def _fmt_usd(n: Any) -> str:
     except (TypeError, ValueError):
         return str(n)
     sign = "-" if x < 0 else ""
-    x = abs(x)
-    if x >= 1_000_000:
-        return f"{sign}${x/1e6:.2f}M"
-    if x >= 1_000:
-        return f"{sign}${x:,.0f}"
-    return f"{sign}${x:,.2f}"
+    ax = abs(x)
+    if ax >= 1_000_000:
+        return f"{sign}${ax/1e6:.2f}M"
+    if ax >= 1_000:
+        return f"{sign}${ax:,.0f}"
+    if ax >= 1:
+        return f"{sign}${ax:,.2f}"
+    if ax >= 0.01:
+        return f"{sign}${ax:.4f}"
+    if ax > 0:
+        return f"{sign}${ax:.6f}".rstrip("0").rstrip(".")
+    return f"{sign}$0.00"
 
 
 def _pct(n: Any) -> str:
@@ -521,10 +527,35 @@ def assemble(result: dict[str, Any]) -> dict[str, Any]:
             s.tables.append(Table(["Address", "Received", "Balance left", "Txs"], rows))
 
     if "cex_fanout" in raw:
-        hubs = (raw["cex_fanout"] or {}).get("hubs") or []
+        fan = raw["cex_fanout"] or {}
+        hubs = fan.get("hubs") or []
+        err = fan.get("_error")
+        dbg = fan.get("_debug") or {}
+        sm = fan.get("summary") or {}
         s = add("Exchange split to many wallets")
+        if err:
+            s.title = s.title + " (PARTIAL)"
+            s.bullets.append("0 hubs in the returned data is a gap, not proof of no CEX split.")
+            s.bullets.append("Surf error: " + " ".join(str(err).split())[:240])
+        trunc = dbg.get("chunk_truncated_p1")
+        nchunks = None
+        ch = dbg.get("chunks")
+        if isinstance(ch, dict):
+            nchunks = ch.get("n") or ch.get("n_chunks")
+        if trunc:
+            s.bullets.append(
+                f"{trunc}"
+                + (f"/{nchunks}" if nchunks else "")
+                + " query chunks hit the row LIMIT. Coverage is incomplete."
+            )
+        if sm:
+            s.bullets.append(
+                f"Confirmed hubs: {sm.get('n_confirmed_hubs', '—')}. "
+                f"Candidates: {sm.get('n_candidate_hubs', '—')}."
+            )
         if not hubs:
-            s.bullets.append("None found.")
+            if not err:
+                s.bullets.append("None found.")
         else:
             rows = []
             for h in hubs[:12]:
@@ -645,7 +676,7 @@ def assemble(result: dict[str, Any]) -> dict[str, Any]:
         lim.bullets.append(
             "Confirmed sells did not finish. Zero CEX/DEX totals are a gap, not a finding of no sells."
         )
-    if caps.get("anomaly_window_days"):
+    if "anomaly72" in raw and caps.get("anomaly_window_days"):
         lim.bullets.append(
             f"Big transfers window: {caps.get('anomaly_window_days')} days "
             f"(Surf block_date lookback {caps.get('anomaly_sql_days') or '—'} days)."
