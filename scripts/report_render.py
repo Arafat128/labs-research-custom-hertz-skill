@@ -398,6 +398,11 @@ def assemble(result: dict[str, Any]) -> dict[str, Any]:
     if "sellout" in raw:
         d = raw["sellout"] or {}
         s = add("Confirmed sells")
+        if d.get("buckets_complete") is False:
+            s.bullets.append("Sell buckets are incomplete. A zero is not proof of no sells.")
+        if d.get("push_airdrop_error"):
+            err = " ".join(str(d.get("push_airdrop_error")).split())
+            s.bullets.append("Surf error on part of sell-out: " + err[:220])
         s.tables.append(
             Table(
                 ["Metric", "Value"],
@@ -572,6 +577,82 @@ def assemble(result: dict[str, Any]) -> dict[str, Any]:
                     ]
                 )
             s.tables.append(Table(["Role", "Wallets", "Balance", "Share", "USD"], rows))
+
+    lim = add("Limits")
+    req = result.get("modules_requested") or []
+    ran_ids = [k for k in (result.get("raw") or {}) if not str(k).startswith("_")]
+    lim.bullets.append(
+        "Requested: " + (", ".join(_mod_name(m, cat) for m in req) if req else "—") + "."
+    )
+    lim.bullets.append(
+        "Ran: " + (", ".join(_mod_name(m, cat) for m in ran_ids) if ran_ids else "—") + "."
+    )
+    skipped = result.get("skipped") or {}
+    errors = result.get("errors") or {}
+    if skipped:
+        lim.bullets.append(
+            "Skipped: " + ", ".join(f"{_mod_name(k, cat)} ({v})" for k, v in skipped.items()) + "."
+        )
+    else:
+        lim.bullets.append("Skipped rounds: none.")
+    if errors:
+        lim.bullets.append(
+            "Module errors: " + ", ".join(f"{_mod_name(k, cat)}: {v}" for k, v in errors.items()) + "."
+        )
+    caps = result.get("trace_limits") or {}
+    r11 = (result.get("raw") or {}).get("insider") or {}
+    if r11:
+        mode = r11.get("_step4") or "unknown"
+        lim.bullets.append(
+            f"Insider trace floor {r11.get('trace_floor') or '—'}. "
+            f"Destination trace: {mode}."
+        )
+        promoted = r11.get("n_sub_dumpers_promoted")
+        skipped_sub = r11.get("n_sub_dumpers_skipped")
+        hop = caps.get("second_hop")
+        if hop == "off" or (promoted == 0 and caps.get("step4_subdumpers_cap") == 0):
+            lim.bullets.append(
+                "First hop included (up to 5 pre-listing wallets that moved ≥10% and received ≥5M). "
+                "Second hop was off."
+            )
+        else:
+            lim.bullets.append(
+                f"First hop included (up to 5). Second hop promoted {promoted if promoted is not None else '—'} "
+                f"and left out {skipped_sub if skipped_sub is not None else '—'} "
+                f"({_fmt_n(r11.get('n_sub_dumpers_skipped_tokens'))} tokens not followed)."
+            )
+        if r11.get("recursion_truncated"):
+            lim.bullets.append("Dumper recursion was truncated. Smaller hops are not in the destination list.")
+        failed = r11.get("step4_skipped_dumpers") or []
+        if failed:
+            lim.bullets.append(
+                f"{len(failed)} dumpers were not traced because every history chunk errored."
+            )
+            rows = []
+            for row in failed[:20]:
+                rows.append(
+                    [
+                        str(row.get("addr") or "—"),
+                        str(row.get("depth") if row.get("depth") is not None else "—"),
+                        f"{row.get('errored_chunks', '—')}/{row.get('total_chunks', '—')}",
+                    ]
+                )
+            lim.tables.append(
+                Table(["Address", "Hop", "Chunks errored"], rows, "Dumpers not traced")
+            )
+    sell = (result.get("raw") or {}).get("sellout") or {}
+    if sell.get("buckets_complete") is False or sell.get("push_airdrop_error"):
+        lim.bullets.append(
+            "Confirmed sells did not finish. Zero CEX/DEX totals are a gap, not a finding of no sells."
+        )
+    if caps.get("anomaly_window_days"):
+        lim.bullets.append(
+            f"Big transfers window: {caps.get('anomaly_window_days')} days "
+            f"(Surf block_date lookback {caps.get('anomaly_sql_days') or '—'} days)."
+        )
+    if not caps and not r11:
+        lim.bullets.append("No insider trace on this run, so dumper hops do not apply.")
+    lim.note = "17–19 (wash, same whales, MEV) are not available in this skill."
 
     foot = Section("Notes")
     foot.bullets.append("Numbers are pipeline output from HertzFlow helpers. This report does not set a price target or a buy/sell.")

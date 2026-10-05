@@ -52,14 +52,16 @@ If the user already named numbers, module ids, or `all`, skip the pick step and 
 ```
 python scripts/labs_research.py scope --ca 0x... --out <workspace>/reports/<ca>/labs-research/scope.json --lang {en|zh}
 python scripts/labs_research.py menu
-python scripts/labs_research.py estimate --modules <numbers or ids or all> --json
-python scripts/labs_research.py run --ca 0x... --modules <numbers or ids or all> --out-dir <workspace>/reports/<ca>/labs-research --lang {en|zh}
+python scripts/labs_research.py estimate --modules <numbers or ids or all> --listing <alpha_listing_date_utc> --depth first --window 3 --json
+python scripts/labs_research.py run --ca 0x... --modules <numbers or ids or all> --out-dir <workspace>/reports/<ca>/labs-research --lang {en|zh} --depth first --window 3
 ```
 
 1. **Scope (always first).** Abort on `SPOT_GRADUATED`, `NEVER_ALPHA`, `INVALID_CA`, or missing `scope_ok`. Do not offer paid modules.
-2. **Menu.** Run `menu` (human text, not `--json`). Paste that numbered list to the user. Do not rewrite the blurbs. Tell them: reply with **numbers** (example `3, 13, 14`), or `all`. Ids still work. `n` + `plain` live in `references/modules.json`.
-3. **Resolve.** CLI auto-includes parents. Tell the user which extra numbers were added (from `auto_included_labels`).
-4. **Estimate.** Run `estimate --modules <their reply> --json`. Print this table from the JSON — do not recompute:
+2. **Menu.** Run `menu` (human text, not `--json`). Paste that numbered list to the user. Do not rewrite the blurbs. Tell them: reply with **numbers** (example `3, 13, 14`), or `all`. Ids still work.
+3. **Switches.** Only if they ticked that round. Defaults if they do not answer: `#3` window **3** days, `#8` depth **first**.
+   - `#3` in the mix: ask `window 1, 3, or 7` (days). One SQL call. 7 days is the higher ceiling.
+   - `#8` in the mix: ask `depth first or second`. **first** = pre-listing dumpers only. **second** = also follow up to 12 next-hop wallets. Second is the run that can drain a small Surf balance. Do not pick second unless they say second.
+4. **Estimate.** Run `estimate --modules <reply> --listing <alpha_listing_date_utc> --depth <first|second> --window <1|3|7> --json`. The selection row is a **ceiling**. Also print `likely_credits_est`, `history_chunks`, `depth`, `anomaly_window_days`, and `estimate_note`. Do not recompute:
 
    | | Credits | USD |
    |---|---|---|
@@ -76,7 +78,9 @@ python scripts/labs_research.py run --ca 0x... --modules <numbers or ids or all>
 ## Module rules
 
 - Numbers **17–19** (`wash`, `cross_sym`, `flow_ops`) are catalogued as advanced and **not wired**. If the user picks them, say they are skipped (`advanced_not_wired_use_hertzflow`) and point to `/hertzflow` for a full forensic.
-- **#1** is the cheap balance pass unless **#8** is also selected. #8 turns on destination tracing and the estimate uses `credits_est_heavy`. Do not promise the light price when #8 is in the mix.
+- **#1** is the cheap balance pass unless **#8** is also selected. #8 depth **first** traces at most 5 pre-listing dumpers. Depth **second** adds up to 12 next-hop wallets × the same chunks. Pass the depth they chose. Do not default #8 to second.
+- **#3** is one SQL call: 4 credits for 1 or 3 days, 8-credit ceiling for 7 days. Pass `--window`.
+- **High-credit rounds:** #8 depth second, then #8 depth first on an old listing, then #9, #10, #11, #13. #5 and #16 are free. #2 is about 4 credits.
 - Reuse `scope.json` in the out dir. Do not run `scope` again inside `run` if that file is already there for the same CA.
 - Report `credits_used` from the pipeline counter. It includes HertzFlow SQL and raw `surf` subprocess stdout. It does not include a key-probe you ran outside `run`.
 - SQL modules skip on holder-snapshot chains (`skipped: surf_no_sql`).

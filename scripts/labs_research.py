@@ -19,6 +19,16 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+# Onchain SQL is Surf's heavy tier: 4 credits per successful call.
+_SQL_CREDITS = 4
+# Rule 11 scans listing-180d through today in 90-day chunks.
+_TRACE_LOOKBACK_DAYS = 180
+_CHUNK_DAYS = 90
+# First-level dumpers HertzFlow always traces (hard cap inside rule_11).
+_STEP4_FIRST_LEVEL = 5
+# Extra chunks if the mint fast-path misses and falls back ~2 years.
+_MINT_FALLBACK_CHUNKS = 8
+
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 CATALOG_PATH = SKILL_ROOT / "references" / "modules.json"
 CA_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
@@ -88,27 +98,122 @@ def default_pack(idx: dict[str, dict[str, Any]]) -> list[str]:
     return [mid for mid, m in idx.items() if m.get("default_on") and not m.get("advanced")]
 
 
-def module_credits(mid: str, idx: dict[str, dict[str, Any]], resolved: list[str]) -> int:
-    """Light estimate unless a sibling in heavy_when is also in the run.
+def normalize_depth(depth: str | None) -> str:
+    d = (depth or "first").strip().lower()
+    if d in ("second", "2", "deep"):
+        return "second"
+    if d in ("first", "1", "shallow", ""):
+        return "first"
+    raise SystemExit("depth must be first or second")
 
-    Insider destination tracing (step 4) is the costly path. It runs only
-    when sellout is selected, so the menu number stays the cheap balance pass.
+
+def normalize_window(window: str | int | None) -> int:
+    if window is None or window == "":
+        return 3
+    try:
+        n = int(window)
+    except (TypeError, ValueError):
+        raise SystemExit("window must be 1, 3, or 7")
+    if n not in (1, 3, 7):
+        raise SystemExit("window must be 1, 3, or 7")
+    return n
+
+
+def anomaly_sql_days(window: int) -> int:
+    """block_date lookback. 3 days keeps the current ~72h query (today()-4)."""
+    return {1: 1, 3: 4, 7: 7}[window]
+
+
+def anomaly_credits(window: int) -> int:
+    """#3 is one Onchain SQL call (4 cr). A 7-day scan can bill a second call's worth."""
+    return 8 if window == 7 else 4
+
+
+def step4_sub_cap(depth: str | None = None) -> int:
+    """Second-hop dumpers. first=0, second=12. Env is only a fallback."""
+    if depth is not None:
+        return 12 if normalize_depth(depth) == "second" else 0
+    raw = os.environ.get("BINANCE_ALPHA_STEP4_MAX_DUMPERS", "0")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def history_chunks(listing: date, today: date | None = None) -> int:
+    """90-day chunks from listing-180d through today. Matches rule_11 step 3/4."""
+    today = today or date.today()
+    floor = listing - timedelta(days=_TRACE_LOOKBACK_DAYS)
+    span = max(1, (today - floor).days)
+    return max(1, (span + _CHUNK_DAYS - 1) // _CHUNK_DAYS)
+
+
+def insider_query_counts(chunks: int, heavy: bool, depth: str = "first") -> tuple[int, int]:
+    """Return (likely SQL calls, worst-case SQL calls) for the insider trace."""
+    likely = 2 + chunks
+    if heavy:
+        likely += _STEP4_FIRST_LEVEL * chunks
+        subs = step4_sub_cap(depth)
+        if subs:
+            likely += subs * chunks + chunks
+    worst = likely + _MINT_FALLBACK_CHUNKS
+    return likely, worst
+
+
+def module_credits(
+    mid: str,
+    idx: dict[str, dict[str, Any]],
+    resolved: list[str],
+    *,
+    chunks: int | None = None,
+    ceiling: bool = False,
+    depth: str = "first",
+    window: int = 3,
+) -> int:
+    """Light estimate unless sellout is also in the run.
+
+    With a known listing age, #1 is priced from chunk count, not the flat
+    catalog number. Ceiling includes a missed mint fast-path.
     """
     m = idx[mid]
-    triggers = m.get("heavy_when") or []
-    if triggers and any(t in resolved for t in triggers) and m.get("credits_est_heavy") is not None:
+    heavy = any(t in resolved for t in (m.get("heavy_when") or []))
+    if mid == "anomaly72":
+        return anomaly_credits(window)
+    if mid == "insider" and chunks is not None and (heavy or ceiling):
+        likely, worst = insider_query_counts(chunks, heavy, depth)
+        credits = (worst if ceiling else likely) * _SQL_CREDITS
+        if not heavy:
+            credits = max(int(m["credits_est"]), (2 + chunks) * _SQL_CREDITS)
+        return credits
+    if heavy and m.get("credits_est_heavy") is not None and chunks is None:
         return int(m["credits_est_heavy"])
     return int(m["credits_est"])
 
 
-def estimate(selected: list[str], cat: dict[str, Any]) -> dict[str, Any]:
+def estimate(
+    selected: list[str],
+    cat: dict[str, Any],
+    listing: str | None = None,
+    depth: str = "first",
+    window: int = 3,
+) -> dict[str, Any]:
     idx = module_index(cat)
     resolved = resolve_modules(selected, idx)
     full = resolve_modules(default_pack(idx), idx)
     usd = float(cat["usd_per_credit"])
-    sel_cr = sum(module_credits(m, idx, resolved) for m in resolved)
-    # Full pack includes sellout, so insider is priced at the heavy trace.
-    full_cr = sum(module_credits(m, idx, full) for m in full)
+    depth = normalize_depth(depth)
+    window = normalize_window(window)
+    listing_date: date | None = None
+    if listing:
+        listing_date = date.fromisoformat(listing[:10])
+    # Unknown age uses a 2-year window so #8 is not priced like a new listing.
+    chunks = history_chunks(listing_date) if listing_date else (9 if "sellout" in resolved else None)
+    full_chunks = history_chunks(listing_date) if listing_date else 9
+    kw = {"depth": depth, "window": window}
+    sel_cr = sum(module_credits(m, idx, resolved, chunks=chunks, ceiling=True, **kw) for m in resolved)
+    # Full pack prices #8 at the same depth the user picked, not a hidden second hop.
+    full_cr = sum(module_credits(m, idx, full, chunks=full_chunks, ceiling=True, **kw) for m in full)
+    likely_sel = sum(module_credits(m, idx, resolved, chunks=chunks, ceiling=False, **kw) for m in resolved)
     cut = max(0, full_cr - sel_cr)
     auto = [m for m in resolved if m not in selected]
     scope_cr = int(cat.get("scope_credits_est") or 0)
@@ -128,12 +233,26 @@ def estimate(selected: list[str], cat: dict[str, Any]) -> dict[str, Any]:
         "scope_usd_est": round(scope_cr * usd, 2),
         "selected_plus_scope_credits_est": sel_cr + scope_cr,
         "full_plus_scope_credits_est": full_cr + scope_cr,
+        "likely_credits_est": likely_sel,
+        "likely_usd_est": round(likely_sel * usd, 2),
+        "history_chunks": chunks,
+        "listing_date": listing_date.isoformat() if listing_date else None,
+        "step4_subdumpers": step4_sub_cap(depth),
+        "depth": depth,
+        "anomaly_window_days": window,
+        "estimate_note": (
+            f"#8 depth={depth} (second hop {'on, up to 12 dumpers' if depth == 'second' else 'off'}). "
+            f"#3 window={window} days (~{anomaly_credits(window)} cr, one SQL call). "
+            "Ceiling assumes up to 5 first-level dumpers × history chunks, "
+            "plus a missed mint fast-path. Onchain SQL is 4 credits per call. "
+            "Empty balance stops the run."
+        ),
         "per_module": [
             {
                 "n": idx[m].get("n"),
                 "id": m,
                 "name": idx[m]["name"],
-                "credits_est": module_credits(m, idx, resolved),
+                "credits_est": module_credits(m, idx, resolved, chunks=chunks, ceiling=True, **kw),
                 "auto_included": m in auto,
             }
             for m in resolved
@@ -166,6 +285,8 @@ def find_hertzflow_root() -> Path:
 
 
 _SURF_SUBPROCESS_PATCHED = False
+_SURF_HALT = False
+_HALT_PATCHED = False
 
 
 def _surf_argv(args: Any) -> list[str]:
@@ -181,26 +302,39 @@ def _is_surf_cli(argv: list[str]) -> bool:
     return a0 == "surf" or a0.endswith("/surf") or a0.endswith("surf.exe")
 
 
-def _credits_from_surf_stdout(stdout: Any) -> float:
+def _surf_stdout_text(stdout: Any) -> str:
     if stdout is None:
-        return 0.0
+        return ""
     if isinstance(stdout, bytes):
-        text = stdout.decode("utf-8", "replace")
-    else:
-        text = str(stdout)
+        return stdout.decode("utf-8", "replace")
+    return str(stdout)
+
+
+def _parse_surf_doc(stdout: Any) -> dict[str, Any] | None:
+    text = _surf_stdout_text(stdout)
     i = text.find("{")
     if i < 0:
-        return 0.0
+        return None
     try:
         doc = json.loads(text[i:])
     except json.JSONDecodeError:
-        return 0.0
-    if not isinstance(doc, dict):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _credits_from_surf_stdout(stdout: Any) -> float:
+    doc = _parse_surf_doc(stdout)
+    if not doc:
         return 0.0
     try:
         return float((doc.get("meta") or {}).get("credits_used") or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _balance_empty(text: str) -> bool:
+    blob = text.lower()
+    return "paid_balance_zero" in blob or "insufficient credit" in blob
 
 
 def _surf_call_already_counted() -> bool:
@@ -232,16 +366,31 @@ def install_surf_credit_patch() -> None:
     orig = sp.run
 
     def run(*args: Any, **kwargs: Any) -> Any:
+        global _SURF_HALT
         proc = orig(*args, **kwargs)
         try:
             argv = _surf_argv(args[0] if args else kwargs.get("args"))
-            if not _is_surf_cli(argv) or _surf_call_already_counted():
+            if not _is_surf_cli(argv):
                 return proc
+            text = _surf_stdout_text(getattr(proc, "stdout", None)) + _surf_stdout_text(
+                getattr(proc, "stderr", None)
+            )
+            if _balance_empty(text):
+                _SURF_HALT = True
+                print(
+                    "[credits] Surf balance empty — stopping further paid calls",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            doc = _parse_surf_doc(getattr(proc, "stdout", None))
             cr = _credits_from_surf_stdout(getattr(proc, "stdout", None))
-            if cr:
+            is_err = bool(doc and "error" in doc)
+            # Successes inside parallel_surf / _run_surf_with_retry are already counted.
+            # Failures there are logged as 0 even when meta.credits_used is set.
+            if cr and (is_err or not _surf_call_already_counted()):
                 from section_a_scope import _surf_credit_add
 
-                _surf_credit_add(credits=cr, seconds=0.0, attempts=1, success=True)
+                _surf_credit_add(credits=cr, seconds=0.0, attempts=1, success=not is_err)
                 sub = argv[1] if len(argv) > 1 else "surf"
                 print(f"[credits] +{cr} cr ({sub})", file=sys.stderr, flush=True)
         except Exception:
@@ -250,6 +399,61 @@ def install_surf_credit_patch() -> None:
 
     sp.run = run  # type: ignore[method-assign]
     _SURF_SUBPROCESS_PATCHED = True
+    _install_balance_halt()
+
+
+def _install_balance_halt() -> None:
+    """Do not retry after the paid balance is gone. Those retries still bill."""
+    global _HALT_PATCHED
+    if _HALT_PATCHED:
+        return
+    import parallel_surf as ps
+    import section_a_scope as sa
+
+    orig_transient = ps._is_transient_error
+
+    def _transient(resp: dict) -> bool:
+        if _SURF_HALT:
+            return False
+        err = resp.get("error") or {}
+        blob = (str(err.get("code", "")) + " " + str(err.get("message", ""))).lower()
+        if "paid_balance_zero" in blob or "insufficient credit" in blob:
+            return False
+        return orig_transient(resp)
+
+    ps._is_transient_error = _transient
+
+    orig_one = ps._run_one
+
+    def _run_one(input_path: str, max_attempts: int = 4):
+        if _SURF_HALT:
+            return (
+                input_path,
+                {"error": {"code": "PAID_BALANCE_ZERO", "message": "halted"}},
+                0.0,
+            )
+        return orig_one(input_path, max_attempts=max_attempts)
+
+    ps._run_one = _run_one
+
+    orig_retry = sa._run_surf_with_retry
+
+    def _retry(cmd, *, stdin=None, base_timeout=30, max_attempts=4):
+        if _SURF_HALT:
+            return None, "PAID_BALANCE_ZERO: halted"
+        doc, err = orig_retry(
+            cmd, stdin=stdin, base_timeout=base_timeout, max_attempts=1
+        )
+        if err and _balance_empty(str(err)):
+            return doc, err
+        if doc is not None or max_attempts <= 1:
+            return doc, err
+        return orig_retry(
+            cmd, stdin=stdin, base_timeout=base_timeout, max_attempts=max_attempts - 1
+        )
+
+    sa._run_surf_with_retry = _retry
+    _HALT_PATCHED = True
 
 
 def boot_hertzflow(lang: str) -> Path:
@@ -298,15 +502,25 @@ def cmd_menu(as_json: bool) -> int:
         f"all = everything 1–16  ·  {full['full_pack_credits_est']} cr "
         f"(~${full['full_pack_usd_est']})"
     )
+    print()
+    print("Switches, only if you tick that round:")
+    print("  #3 window: 1, 3, or 7 days (default 3). One SQL call.")
+    print("  #8 depth: first (default) or second. Second follows 12 more wallets and is the expensive hop.")
     return 0
 
 
-def cmd_estimate(modules: str, as_json: bool) -> int:
+def cmd_estimate(
+    modules: str,
+    as_json: bool,
+    listing: str | None = None,
+    depth: str = "first",
+    window: int = 3,
+) -> int:
     cat = load_catalog()
     number_index(cat)
     idx = module_index(cat)
     wanted = _parse_modules(modules, idx, cat)
-    est = estimate(wanted, cat)
+    est = estimate(wanted, cat, listing=listing, depth=depth, window=window)
     if as_json:
         print(json.dumps(est, ensure_ascii=False, indent=2))
         return 0
@@ -331,6 +545,17 @@ def cmd_estimate(modules: str, as_json: bool) -> int:
         print("Also added: " + ", ".join(est["auto_included_labels"]))
     print("Will run: " + ", ".join(est["resolved_labels"]))
     print(f"Cut vs full pack: {est['cut_pct']}%")
+    if est.get("history_chunks"):
+        print(
+            f"History chunks: {est['history_chunks']}"
+            + (f" (listing {est['listing_date']})" if est.get("listing_date") else " (listing age unknown)")
+        )
+    print(
+        f"Depth: {est['depth']} · #3 window: {est['anomaly_window_days']} days · "
+        f"likely ~{est['likely_credits_est']} cr (${est['likely_usd_est']}). "
+        "Ceiling is the selection row."
+    )
+    print(est["estimate_note"])
     print("Proceed? (Y/N)")
     return 0
 
@@ -433,6 +658,8 @@ def run_selected(
     modules: list[str],
     lang: str,
     out_dir: Path,
+    depth: str = "first",
+    window: int = 3,
 ) -> dict[str, Any]:
     from chain_router import (
         UnsupportedChainError,
@@ -448,6 +675,10 @@ def run_selected(
     set_lang(lang)
     ca = ca.lower()
     out_dir.mkdir(parents=True, exist_ok=True)
+    depth = normalize_depth(depth)
+    window = normalize_window(window)
+    # Explicit set, not setdefault: a prior estimate() must not pin this to 0.
+    os.environ["BINANCE_ALPHA_STEP4_MAX_DUMPERS"] = str(step4_sub_cap(depth))
     t0 = time.perf_counter()
     credits0 = _credit_snap()
     timings: dict[str, float] = {}
@@ -611,14 +842,24 @@ def run_selected(
         if need_sql("anomaly72"):
             skipped["anomaly72"] = "surf_no_sql"
         else:
-            from section_anomaly_72h import run as anom_run
+            import section_anomaly_72h as anom
 
-            tick(
-                "anomaly72",
-                lambda: anom_run(
-                    ca=ca, evidence_graph=eg, threshold_token_amount=100_000, price_usd=price
-                ),
-            )
+            days = anomaly_sql_days(window)
+            orig_sql = anom.SQL_RECENT_72H
+            anom.SQL_RECENT_72H = orig_sql.replace("today() - 4", f"today() - {days}")
+
+            def _anom():
+                try:
+                    return anom.run(
+                        ca=ca,
+                        evidence_graph=eg,
+                        threshold_token_amount=100_000,
+                        price_usd=price,
+                    )
+                finally:
+                    anom.SQL_RECENT_72H = orig_sql
+
+            tick("anomaly72", _anom)
 
     if "cex" in want:
         from section_cex_trace import run as cex_run
@@ -915,10 +1156,20 @@ def run_selected(
         "credits_used": round(used, 2),
         "credits_by_module": credit_by_module,
         "surf_calls": int(credits1.get("calls") or 0) - int(credits0.get("calls") or 0),
+        "trace_limits": {
+            "step4_first_level_cap": 5,
+            "step4_subdumpers_cap": step4_sub_cap(depth),
+            "second_hop": "on" if depth == "second" else "off",
+            "depth": depth,
+            "anomaly_window_days": window,
+            "anomaly_sql_days": anomaly_sql_days(window),
+        },
         "evidence_graph": eg.to_dict() if hasattr(eg, "to_dict") else {},
     }
     cat = load_catalog()
-    result["credit_estimate"] = estimate(modules, cat)
+    result["credit_estimate"] = estimate(
+        modules, cat, listing=scope.get("alpha_listing_date_utc"), depth=depth, window=window
+    )
     _write_result(out_dir, result, lang)
     return result
 
@@ -1051,7 +1302,29 @@ def _write_result(out_dir: Path, result: dict[str, Any], lang: str) -> None:
     write_reports(out_dir, result, lang)
 
 
-def cmd_run(ca: str, modules: str, out_dir: Path, lang: str) -> int:
+def _listing_from_scope(out_dir: Path, ca: str) -> str | None:
+    path = out_dir / "scope.json"
+    if not path.is_file():
+        return None
+    try:
+        scope = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    got = str(scope.get("contract_address") or "").lower()
+    if got and got != ca.lower():
+        return None
+    listing = scope.get("alpha_listing_date_utc")
+    return str(listing)[:10] if listing else None
+
+
+def cmd_run(
+    ca: str,
+    modules: str,
+    out_dir: Path,
+    lang: str,
+    depth: str = "first",
+    window: int = 3,
+) -> int:
     if not CA_RE.match(ca):
         print("INSUFFICIENT_DATA: CA failed regex ^0x[a-fA-F0-9]{40}$", file=sys.stderr)
         return 2
@@ -1060,10 +1333,11 @@ def cmd_run(ca: str, modules: str, out_dir: Path, lang: str) -> int:
     idx = module_index(cat)
     wanted = _parse_modules(modules, idx, cat)
     resolved = resolve_modules(wanted, idx)
-    est = estimate(wanted, cat)
+    listing = _listing_from_scope(out_dir, ca)
+    est = estimate(wanted, cat, listing=listing, depth=depth, window=window)
     print(json.dumps({"credit_estimate": est}, ensure_ascii=False, indent=2), file=sys.stderr)
     boot_hertzflow(lang)
-    result = run_selected(ca, resolved, lang, out_dir)
+    result = run_selected(ca, resolved, lang, out_dir, depth=depth, window=window)
     if result.get("_status") != "ok":
         return 1
     return 0
@@ -1090,6 +1364,9 @@ def main() -> int:
 
     p_est = sub.add_parser("estimate")
     p_est.add_argument("--modules", required=True)
+    p_est.add_argument("--listing", default=None, help="Alpha listing YYYY-MM-DD")
+    p_est.add_argument("--depth", default="first", choices=("first", "second"))
+    p_est.add_argument("--window", type=int, default=3, choices=(1, 3, 7))
     p_est.add_argument("--json", action="store_true")
 
     p_scope = sub.add_parser("scope")
@@ -1102,6 +1379,8 @@ def main() -> int:
     p_run.add_argument("--modules", required=True, help="numbers, ids, or 'all' (e.g. 3,13,14)")
     p_run.add_argument("--out-dir", type=Path, required=True)
     p_run.add_argument("--lang", default="en", choices=("en", "zh"))
+    p_run.add_argument("--depth", default="first", choices=("first", "second"))
+    p_run.add_argument("--window", type=int, default=3, choices=(1, 3, 7))
 
     p_render = sub.add_parser("render")
     p_render.add_argument("--in", dest="src", type=Path, required=True)
@@ -1111,11 +1390,11 @@ def main() -> int:
     if args.cmd == "menu":
         return cmd_menu(args.json)
     if args.cmd == "estimate":
-        return cmd_estimate(args.modules, args.json)
+        return cmd_estimate(args.modules, args.json, args.listing, args.depth, args.window)
     if args.cmd == "scope":
         return cmd_scope(args.ca, args.out, args.lang)
     if args.cmd == "run":
-        return cmd_run(args.ca, args.modules, args.out_dir, args.lang)
+        return cmd_run(args.ca, args.modules, args.out_dir, args.lang, args.depth, args.window)
     if args.cmd == "render":
         return cmd_render(args.src, args.out_dir)
     return 2
