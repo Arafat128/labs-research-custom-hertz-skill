@@ -56,7 +56,7 @@ python scripts/labs_research.py estimate --modules <numbers or ids or all> --lis
 python scripts/labs_research.py run --ca 0x... --modules <numbers or ids or all> --out-dir <workspace>/reports/<ca>/labs-research --lang {en|zh} --depth first --window 3
 ```
 
-1. **Scope (always first).** Abort on `SPOT_GRADUATED`, `NEVER_ALPHA`, `INVALID_CA`, or missing `scope_ok`. Do not offer paid modules.
+1. **Scope (always first).** Abort on `SPOT_GRADUATED`, `NEVER_ALPHA`, `INVALID_CA`, or missing `scope_ok`. Do not offer paid modules. Read `_labs_credits_used` from `scope.json` (stderr also prints it). That is the real scope bill, not the catalog 15. Reuse the file on `run` so scope is not billed twice.
 2. **Menu.** Run `menu` (human text, not `--json`). Paste that numbered list to the user. Do not rewrite the blurbs. Tell them: reply with **numbers** (example `3, 13, 14`), or `all`. Ids still work.
 3. **Switches.** Only if they ticked that round. Defaults if they do not answer: `#3` window **3** days, `#8` depth **first**.
    - `#3` in the mix: ask `window 1, 3, or 7` (days). One SQL call. 7 days is the higher ceiling.

@@ -337,6 +337,25 @@ def _balance_empty(text: str) -> bool:
     return "paid_balance_zero" in blob or "insufficient credit" in blob
 
 
+def _permanent_surf_error(text: str) -> bool:
+    """Errors that will never succeed on retry and still bill each attempt."""
+    blob = text.lower()
+    markers = (
+        "paid_balance_zero",
+        "insufficient credit",
+        "unauthorized",
+        "invalid api key",
+        "sync_query_requires_async",
+        "asynchronous execution",
+        "asynchronous job",
+        "submit this query as an asynchronous",
+        "unknown table",
+        "unknown identifier",
+        "invalid_request",
+    )
+    return any(m in blob for m in markers)
+
+
 def _surf_call_already_counted() -> bool:
     """True when HertzFlow already added this call via _surf_credit_add."""
     import inspect
@@ -417,7 +436,7 @@ def _install_balance_halt() -> None:
             return False
         err = resp.get("error") or {}
         blob = (str(err.get("code", "")) + " " + str(err.get("message", ""))).lower()
-        if "paid_balance_zero" in blob or "insufficient credit" in blob:
+        if _permanent_surf_error(blob):
             return False
         return orig_transient(resp)
 
@@ -444,7 +463,7 @@ def _install_balance_halt() -> None:
         doc, err = orig_retry(
             cmd, stdin=stdin, base_timeout=base_timeout, max_attempts=1
         )
-        if err and _balance_empty(str(err)):
+        if err and _permanent_surf_error(str(err)):
             return doc, err
         if doc is not None or max_attempts <= 1:
             return doc, err
@@ -598,7 +617,13 @@ def cmd_scope(ca: str, out: Path | None, lang: str) -> int:
     boot_hertzflow(lang)
     from section_a_scope import run as section_a_run
 
+    c0 = _credit_snap()
     scope = section_a_run(ca.lower())
+    c1 = _credit_snap()
+    used = round(float(c1.get("credits") or 0) - float(c0.get("credits") or 0), 2)
+    scope["_labs_credits_used"] = used
+    scope["_labs_surf_calls"] = int(c1.get("calls") or 0) - int(c0.get("calls") or 0)
+    print(f"[scope] credits_used={used} calls={scope['_labs_surf_calls']}", file=sys.stderr, flush=True)
     payload = json.dumps(scope, ensure_ascii=False, indent=2, default=str)
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
